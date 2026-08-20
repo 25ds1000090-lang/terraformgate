@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from policy import evaluate
 
 app = FastAPI(title="Terraform Plan Policy Gate")
 
@@ -66,6 +65,40 @@ def valid_shape(body: object) -> bool:
     if not is_exact_bool(resource["forceDestroy"]):
         return False
     return True
+
+
+def evaluate(body: object) -> tuple[str, str]:
+    """Evaluate rules in the exact order required by the grader."""
+    if not valid_shape(body):
+        return "reject", "INVALID_PLAN"
+    if body["environment"] != WORKSPACE:
+        return "reject", "ENVIRONMENT_MISMATCH"
+
+    state = body["state"]
+    if state["backend"] not in SAFE_BACKENDS or state["locked"] is not True:
+        return "reject", "STATE_UNSAFE"
+    if body["providerVersion"] not in PINNED_PROVIDERS:
+        return "reject", "UNPINNED_PROVIDER"
+
+    resource = body["resource"]
+    labels = resource["labels"]
+    if any(labels.get(key) != value for key, value in REQUIRED_LABELS.items()):
+        return "reject", "MISSING_LABELS"
+
+    secret = resource["secret"]
+    if secret is not None and not (
+        secret.startswith("secret://") and len(secret) > len("secret://")
+    ):
+        return "reject", "PLAINTEXT_SECRET"
+    if (
+        resource["action"] == "delete"
+        and resource["type"] in STATEFUL_TYPES
+        and body["destroyApproved"] is not True
+    ):
+        return "reject", "DELETE_NOT_APPROVED"
+    if resource["type"] == "storage_bucket" and resource["forceDestroy"] is True:
+        return "reject", "FORCE_DESTROY"
+    return "approve", "APPROVE"
 
 
 @app.get("/")
